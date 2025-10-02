@@ -1,0 +1,3 @@
+([('dna_translator',
+   '/Users/Aone/Documents/Bioinf/DNAconverter/dist/dna_translator',
+   'EXECUTABLE')],)
