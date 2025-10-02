@@ -38,7 +38,7 @@ pip install pyqt5 biopython
 Run the GUI:
 
 ```
-python dna_translator_gui.py
+python dna_translator.py
 ```
 
 ### Features
@@ -65,7 +65,7 @@ pip install pyinstaller
 ### 2. Package the app
 
 ```
-pyinstaller --name "DNATranslator" --onefile --windowed dna_translator_gui.py
+pyinstaller --name "DNAanalyzer" --onefile --windowed dna_translator.py
 ```
 
 - `--onefile` generates a single executable.
@@ -78,7 +78,7 @@ After packaging, the `.app` will be inside the `dist` folder.
 If macOS blocks the app:
 
 ```
-xattr -d com.apple.quarantine /path/to/DNATranslator.app
+xattr -d com.apple.quarantine /path/to/DNAanalyzer.app
 ```
 
 - Or right-click → Open → confirm.
