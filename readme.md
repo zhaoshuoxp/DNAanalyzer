@@ -5,13 +5,11 @@
 This is a Python-based GUI tool built with **PyQt5** and **Biopython** for sequence analysis. It allows you to:
 
 - Input DNA or RNA sequences.
-- Automatically detect RNA and warn about A:U pairing.
-- Remove invalid characters and display warnings in red.
 - Display **complement**, **reverse**, and **reverse-complement** sequences.
 - Perform **six-frame translation** (optional display).
 - Analyze **restriction enzyme sites** with keyword search/filter.
 - Save sequences in **standard FASTA/ORIGIN format**.
-- Search subsequences and highlight matches in a formatted display.
+- **Search** subsequences and **highlight** matches in a formatted display.
 
 ![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main//screenshot1.png)
 
