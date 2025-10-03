@@ -10,10 +10,13 @@ This is a Python-based GUI tool built with **PyQt5** and **Biopython** for seque
 - Analyze **restriction enzyme sites** with keyword search/filter.
 - Save sequences in **standard FASTA/ORIGIN format**.
 - **Search** subsequences and **highlight** matches in a formatted display.
+- **Search** subsequences and **highlight** matches in a formatted display.
 
 ![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main//screenshot1.png)
 
 ![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main//screenshot2.png)
+
+![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main/screenshot3.png)
 
 ------
 
