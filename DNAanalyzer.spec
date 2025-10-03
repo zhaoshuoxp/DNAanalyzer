@@ -5,7 +5,7 @@ a = Analysis(
     ['dna_translator.py'],
     pathex=[],
     binaries=[],
-    datas=[('muscle-osx-x86', '.')],
+    datas=[('muscle-osx-arm64', '.')],
     hiddenimports=[],
     hookspath=[],
     hooksconfig={},
