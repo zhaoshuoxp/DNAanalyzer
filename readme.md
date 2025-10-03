@@ -23,7 +23,6 @@ This is a Python-based GUI tool built with **PyQt5** and **Biopython** for seque
 
 ## Requirements
 
-- Python 3.10+ (installed via Homebrew recommended)
 - PyQt5
 - Biopython
 - Python 3.8+
