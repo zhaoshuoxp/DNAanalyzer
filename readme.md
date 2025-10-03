@@ -78,11 +78,12 @@ pip install pyinstaller
 ### 2. Package the app
 
 ```
-pyinstaller --name "DNAanalyzer" --onefile --windowed dna_translator.py
+pyinstaller --name "DNAanalyzer" --add-data "muscle-osx-x86:." --onefile --windowed dna_translator.py
 ```
 
 - `--onefile` generates a single executable.
 - `--windowed` prevents a terminal window from opening.
+- `--add-data` includes the MUSCLE binary for aligning.
 
 After packaging, the `.app` will be inside the `dist` folder.
 
