@@ -299,15 +299,25 @@ class DNATranslator(QWidget):
     # ------------------ Multi-Seq Alignment ------------------
     def detect_muscle(self):
         system = platform.system()
+        arch = platform.machine()
         exe_path = None
-        if system=="Darwin":  # macOS
-            exe_path = os.path.join(os.path.dirname(__file__),"muscle-osx-x86")
-        elif system=="Linux":
-            exe_path = os.path.join(os.path.dirname(__file__),"muscle-linux-x86")
-        elif system=="Windows":
-            exe_path = os.path.join(os.path.dirname(__file__),"muscle-win64.exe")
+        script_dir = os.path.dirname(__file__)
+        # macOS
+        if system == "Darwin":
+            if arch == "arm64":
+                exe_path = os.path.join(script_dir,"muscle-osx-arm64")
+            else:
+                exe_path = os.path.join(script_dir,"muscle-osx-x86")
+        elif system == "Linux":
+            exe_path = os.path.join(script_dir,"muscle-linux-x86")
+        elif system == "Windows":
+            exe_path = os.path.join(script_dir,"muscle-win64.exe")
         if exe_path and os.path.exists(exe_path):
             return exe_path
+        # fallback to PATH
+        for candidate in ["muscle","muscle.exe"]:
+            if shutil.which(candidate):
+                return candidate
         return None
 
     def show_multi_alignment_dialog(self):
@@ -347,31 +357,44 @@ class DNATranslator(QWidget):
         # ------------------ Align sequences ------------------
         def do_align():
             sequences = []
+            aa_letters = set("ACDEFGHIKLMNPQRSTVWY")
+            dna_letters = set("ATGCU")
+
             for te in seq_edits:
                 txt = te.toPlainText().strip().upper()
-                cleaned = "".join([c for c in txt if c in "ATGCU"])
-                if cleaned: sequences.append(cleaned)
-            if len(sequences)<2:
+                if not txt: 
+                    continue
+                txt_set = set(txt)
+                # 自动判断序列类型
+                if txt_set <= dna_letters:
+                    cleaned = "".join([c for c in txt if c in dna_letters])
+                else:
+                    cleaned = "".join([c for c in txt if c in aa_letters])
+                if cleaned:
+                    sequences.append(cleaned)
+
+            if len(sequences) < 2:
                 result_display.setText("Enter at least 2 valid sequences.")
                 return
+
             muscle_path = self.detect_muscle()
             if not muscle_path:
-                result_display.setText("Muscle executable not found in script directory.")
+                result_display.setText("Muscle executable not found in script directory or PATH.")
                 return
 
             with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp_in:
-                for i,s in enumerate(sequences):
+                for i, s in enumerate(sequences):
                     tmp_in.write(f">Seq{i+1}\n{s}\n")
                 tmp_in_path = tmp_in.name
             tmp_out_path = tempfile.NamedTemporaryFile(delete=False).name
 
             try:
-                subprocess.run([muscle_path,"-align",tmp_in_path,"-output",tmp_out_path], check=True)
+                subprocess.run([muscle_path, "-align", tmp_in_path, "-output", tmp_out_path], check=True)
             except subprocess.CalledProcessError as e:
                 result_display.setText(f"Error running Muscle: {e}")
                 return
 
-            # Parse aligned sequences
+            # 解析并显示结果
             aligned_dict = {}
             current_label = None
             seq_order = []
@@ -385,23 +408,21 @@ class DNATranslator(QWidget):
                     else:
                         aligned_dict[current_label] += line
 
-            # Pad sequences
             max_len = max(len(s) for s in aligned_dict.values())
             for k in aligned_dict:
                 aligned_dict[k] = aligned_dict[k].ljust(max_len,'-')
 
-            # Display results
             result_display.clear()
             cursor = result_display.textCursor()
             for label in seq_order:
                 row = aligned_dict[label]
                 cursor.insertText(f"{label:<5} ")
-                for i,c in enumerate(row):
+                for i, c in enumerate(row):
                     fmt = QTextCharFormat()
                     col_chars = [s[i] for s in aligned_dict.values()]
-                    if col_chars.count(c)!=len(col_chars):
+                    if col_chars.count(c) != len(col_chars):
                         fmt.setForeground(QColor("red"))
-                    cursor.insertText(c,fmt)
+                    cursor.insertText(c, fmt)
                 cursor.insertText("\n")
 
         align_btn = QPushButton("Align")
@@ -410,6 +431,7 @@ class DNATranslator(QWidget):
         dlg.exec_()
 
 if __name__=="__main__":
+    import shutil
     app = QApplication(sys.argv)
     win = DNATranslator()
     win.show()

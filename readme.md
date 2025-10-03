@@ -26,7 +26,8 @@ This is a Python-based GUI tool built with **PyQt5** and **Biopython** for seque
 - PyQt5
 - Biopython
 - Python 3.8+
-- MUSCLE executable (place in the same directory as the script if using MSA)
+- MUSCLE executable (place in the same directory as the script if using MSA) 
+  - gcc@11 required by macOS MUSCLE, install by `brew install gcc@11`
 - Internet access if using NCBI BLAST remote search
 
 Install dependencies:
