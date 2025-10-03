@@ -10,11 +10,12 @@ This is a Python-based GUI tool built with **PyQt5** and **Biopython** for seque
 - Analyze **restriction enzyme sites** with keyword search/filter.
 - Save sequences in **standard FASTA/ORIGIN format**.
 - **Search** subsequences and **highlight** matches in a formatted display.
-- **Search** subsequences and **highlight** matches in a formatted display.
+- **BLAST** search (remote via NCBI)
+- Multiple Sequence **Alignment** (MSA) using MUSCLE
 
 ![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main//screenshot1.png)
 
-![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main//screenshot2.png)
+![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main/screenshot2.png)
 
 ![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main/screenshot3.png)
 
@@ -25,6 +26,9 @@ This is a Python-based GUI tool built with **PyQt5** and **Biopython** for seque
 - Python 3.10+ (installed via Homebrew recommended)
 - PyQt5
 - Biopython
+- Python 3.8+
+- MUSCLE executable (place in the same directory as the script if using MSA)
+- Internet access if using NCBI BLAST remote search
 
 Install dependencies:
 
@@ -50,10 +54,18 @@ python dna_translator.py
 4. **Restriction Enzyme Analysis**: Click "Show Restriction Enzymes" to display sites. Filter by enzyme name if needed.
 5. **Search Subsequence**: Click the button to open a search dialog. Subsequence matches are highlighted in **ORIGIN/FASTA format**.
 6. **Save as FASTA**: Save the sequence in a standard, formatted FASTA file.
+7. **Run BLAST**: re-direct to NCBI blast webpage.
+- **Run Multiple Sequence Alignment (MSA)**:
+  - Add/remove sequences dynamically
+  - MUSCLE executable auto-detection by OS:
+    - `muscle-osx-x86` for macOS
+    - `muscle-linux-x86` for Linux
+    - `muscle-win64.exe` for Windows
+  - Aligned output shown with mismatches in **red**
 
 ------
 
-## macOS App Packaging
+## Package into Single App (macOS example)
 
 You can create a standalone macOS `.app` using **pyinstaller**.
 
@@ -82,7 +94,7 @@ If macOS blocks the app:
 xattr -d com.apple.quarantine /path/to/DNAanalyzer.app
 ```
 
-- Or right-click → Open → confirm.
+- Or allow from **System Preferences → Security & Privacy**.
 
 ------
 
