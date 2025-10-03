@@ -77,7 +77,7 @@ pip install pyinstaller
 ### 2. Package the app
 
 ```
-pyinstaller --name "DNAanalyzer" --add-data "muscle-osx-x86:." --onefile --windowed dna_translator.py
+pyinstaller --name "DNAanalyzer" --add-data "muscle-osx-x86:." --icon app.icns --onefile --windowed dna_translator.py
 ```
 
 - `--onefile` generates a single executable.
