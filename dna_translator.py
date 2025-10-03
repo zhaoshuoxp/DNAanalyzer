@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 import sys
+import os
+import platform
+import subprocess
+import tempfile
+import webbrowser
+
 from PyQt5.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout,
-    QTextEdit, QPushButton, QLabel, QGridLayout, QLineEdit, QFileDialog, QDialog
+    QTextEdit, QPushButton, QLabel, QGridLayout, QLineEdit, QFileDialog, QDialog, QMessageBox, QScrollArea
 )
 from PyQt5.QtGui import QFont, QTextCursor, QTextCharFormat, QColor
 from PyQt5.QtCore import Qt
@@ -61,12 +67,12 @@ class SequenceSearchDialog(QDialog):
         layout.addWidget(self.text_area)
         self.setLayout(layout)
         
-        # --- Clean sequence: remove invalid characters, U->T ---
+        # Clean sequence: remove invalid characters, U->T
         allowed = set("ACGTU")
         clean_seq = "".join([c.upper() for c in seq if c.upper() in allowed]).replace("U","T")
         self.seq = clean_seq
         
-        # --- Format as ORIGIN / Fasta style ---
+        # Format as ORIGIN / Fasta style
         self.formatted_seq = format_fasta_origin(self.seq)
         self.text_area.setText(self.formatted_seq)
         
@@ -94,7 +100,7 @@ class SequenceSearchDialog(QDialog):
             cursor.movePosition(QTextCursor.Right, QTextCursor.KeepAnchor, len(search_text))
             cursor.mergeCharFormat(fmt)
             start = idx + len(search_text)
-            
+
 # --- Main GUI ---
 class DNATranslator(QWidget):
     def __init__(self):
@@ -106,23 +112,23 @@ class DNATranslator(QWidget):
         right_layout = QVBoxLayout()
         right_layout.setAlignment(Qt.AlignTop)
         
-        # --- Warning label ---
+        # Warning label
         self.warning_label = QLabel("")
         self.warning_label.setStyleSheet("color: red;")
         left_layout.addWidget(self.warning_label)
         
-        # --- Input sequence ---
+        # Input sequence
         left_layout.addWidget(QLabel("Enter DNA or RNA sequence (A/T/G/C/U):"))
         self.input = QTextEdit()
         self.input.setFont(QFont("Courier", 12))
         left_layout.addWidget(self.input)
         
-        # --- Sequence search highlighter ---
+        # Sequence search highlighter
         self.seq_search_btn = QPushButton("Search Subsequence")
         self.seq_search_btn.clicked.connect(self.show_sequence_search_dialog)
         left_layout.addWidget(self.seq_search_btn)
         
-        # --- Buttons ---
+        # Buttons
         btn_layout = QHBoxLayout()
         self.clear_btn = QPushButton("Clear")
         self.clear_btn.clicked.connect(lambda: self.input.clear())
@@ -130,15 +136,21 @@ class DNATranslator(QWidget):
         self.translate_btn.clicked.connect(self.show_translation)
         self.re_btn = QPushButton("Show Restriction Enzymes")
         self.re_btn.clicked.connect(self.show_restriction_sites)
+        self.blast_btn = QPushButton("NCBI BLAST")
+        self.blast_btn.clicked.connect(self.run_blast)
+        self.align_btn = QPushButton("Multiple Alignment")
+        self.align_btn.clicked.connect(self.show_multi_alignment_dialog)
         self.save_btn = QPushButton("Save as Fasta")
         self.save_btn.clicked.connect(self.save_fasta)
         btn_layout.addWidget(self.clear_btn)
         btn_layout.addWidget(self.translate_btn)
         btn_layout.addWidget(self.re_btn)
+        btn_layout.addWidget(self.blast_btn)
+        btn_layout.addWidget(self.align_btn)
         btn_layout.addWidget(self.save_btn)
         left_layout.addLayout(btn_layout)
         
-        # --- Complement / Reverse / Reverse-Complement ---
+        # Complement / Reverse / Reverse-Complement
         seq_layout = QGridLayout()
         self.comp_label = QTextEdit(); self.comp_label.setReadOnly(True); self.comp_label.setFont(QFont("Courier",12))
         self.rev_label = QTextEdit(); self.rev_label.setReadOnly(True); self.rev_label.setFont(QFont("Courier",12))
@@ -153,7 +165,7 @@ class DNATranslator(QWidget):
         seq_layout.addWidget(QLabel("Reverse-Complement:"),0,2); seq_layout.addWidget(self.revc_label,1,2); seq_layout.addWidget(self.revc_copy,2,2)
         left_layout.addLayout(seq_layout)
         
-        # --- 6-frame translation ---
+        # 6-frame translation container (hidden until used)
         self.translation_container = QWidget()
         self.translation_container.hide()
         trans_layout = QGridLayout()
@@ -166,11 +178,11 @@ class DNATranslator(QWidget):
         self.translation_container.setLayout(trans_layout)
         left_layout.addWidget(self.translation_container)
         
-        # --- Restriction enzyme analysis ---
+        # Restriction enzyme analysis UI on right side
         self.re_label_title = QLabel("Restriction Enzyme Sites (1-based):")
         self.re_label_title.hide()
         self.re_search = QLineEdit()
-        self.re_search.setPlaceholderText("Filter enzymes (e.g., EcoRI)")
+        self.re_search.setPlaceholderText("Filter enzymes (comma-separated)")
         self.re_search.hide()
         self.re_search.textChanged.connect(self.update_restriction_sites)
         self.re_enzyme_label = QTextEdit()
@@ -181,12 +193,12 @@ class DNATranslator(QWidget):
         right_layout.addWidget(self.re_search)
         right_layout.addWidget(self.re_enzyme_label)
         
-        # --- Combine layouts ---
+        # Combine layouts
         main_layout.addLayout(left_layout,3)
         main_layout.addLayout(right_layout,1)
         self.setLayout(main_layout)
         
-        # --- Input change ---
+        # Connect input changes
         self.input.textChanged.connect(self.update_sequences)
         
     # -------------------
@@ -209,7 +221,6 @@ class DNATranslator(QWidget):
     def complement(self, seq, is_rna=False):
         table = str.maketrans("ACGT", "UGCA" if is_rna else "TGCA")
         return seq.translate(table)
-    
     def reverse(self, seq): return seq[::-1]
     def reverse_complement(self, seq, is_rna=False): return self.complement(seq,is_rna)[::-1]
         
@@ -245,10 +256,10 @@ class DNATranslator(QWidget):
     def update_restriction_sites(self):
         seq = "".join([c for c in self.input.toPlainText().upper() if c in "ACGTU"]).replace("U","T")
         seq_obj = Seq(seq)
-        keyword = self.re_search.text().upper().strip()
+        keywords = [k.strip().upper() for k in self.re_search.text().split(",") if k.strip()]
         results = []
         for enzyme in enzyme_batch:
-            if keyword and keyword not in enzyme.__name__.upper():
+            if keywords and not any(k in enzyme.__name__.upper() for k in keywords):
                 continue
             positions = [pos+1 for pos in enzyme.search(seq_obj)]
             if positions:
@@ -275,9 +286,131 @@ class DNATranslator(QWidget):
         dialog = SequenceSearchDialog(seq, self)
         dialog.exec_()
         
+    # -------------------
+    # BLAST (open NCBI BLAST with sequence prefilled)
+    def run_blast(self):
+        seq = "".join([c for c in self.input.toPlainText().upper() if c in "ACGTU"])
+        if not seq:
+            QMessageBox.warning(self, "Warning", "Enter sequence first.")
+            return
+        url = f"https://blast.ncbi.nlm.nih.gov/Blast.cgi?PROGRAM=blastn&PAGE_TYPE=BlastSearch&QUERY={seq}"
+        webbrowser.open(url)
+
+    # ------------------ Multi-Seq Alignment ------------------
+    def detect_muscle(self):
+        system = platform.system()
+        exe_path = None
+        if system=="Darwin":  # macOS
+            exe_path = os.path.join(os.path.dirname(__file__),"muscle-osx-x86")
+        elif system=="Linux":
+            exe_path = os.path.join(os.path.dirname(__file__),"muscle-linux-x86")
+        elif system=="Windows":
+            exe_path = os.path.join(os.path.dirname(__file__),"muscle-win64.exe")
+        if exe_path and os.path.exists(exe_path):
+            return exe_path
+        return None
+
+    def show_multi_alignment_dialog(self):
+        dlg = QDialog(self); dlg.setWindowTitle("Multiple Sequence Alignment"); dlg.resize(1000,700)
+        layout = QVBoxLayout()
+        scroll = QScrollArea(); scroll.setWidgetResizable(True)
+        container = QWidget(); container_layout = QVBoxLayout(); container.setLayout(container_layout)
+        scroll.setWidget(container); layout.addWidget(scroll)
+        seq_edits=[]
+        for _ in range(2):
+            te = QTextEdit(); te.setFont(QFont("Courier",12)); te.setFixedHeight(50)
+            container_layout.addWidget(te); seq_edits.append(te)
+
+        # Add/Remove sequence buttons
+        btn_layout = QHBoxLayout()
+        add_btn = QPushButton("Add Sequence")
+        remove_btn = QPushButton("Remove Sequence")
+        btn_layout.addWidget(add_btn)
+        btn_layout.addWidget(remove_btn)
+        layout.addLayout(btn_layout)
+
+        def add_seq(): 
+            te = QTextEdit(); te.setFont(QFont("Courier",12)); te.setFixedHeight(50)
+            container_layout.addWidget(te); seq_edits.append(te)
+        def remove_seq(): 
+            if seq_edits: 
+                te = seq_edits.pop()
+                container_layout.removeWidget(te)
+                te.deleteLater()
+        add_btn.clicked.connect(add_seq)
+        remove_btn.clicked.connect(remove_seq)
+
+        result_display = QTextEdit(); result_display.setReadOnly(True); result_display.setFont(QFont("Courier",12))
+        layout.addWidget(result_display)
+        dlg.setLayout(layout)
+
+        # ------------------ Align sequences ------------------
+        def do_align():
+            sequences = []
+            for te in seq_edits:
+                txt = te.toPlainText().strip().upper()
+                cleaned = "".join([c for c in txt if c in "ATGCU"])
+                if cleaned: sequences.append(cleaned)
+            if len(sequences)<2:
+                result_display.setText("Enter at least 2 valid sequences.")
+                return
+            muscle_path = self.detect_muscle()
+            if not muscle_path:
+                result_display.setText("Muscle executable not found in script directory.")
+                return
+
+            with tempfile.NamedTemporaryFile(mode='w', delete=False) as tmp_in:
+                for i,s in enumerate(sequences):
+                    tmp_in.write(f">Seq{i+1}\n{s}\n")
+                tmp_in_path = tmp_in.name
+            tmp_out_path = tempfile.NamedTemporaryFile(delete=False).name
+
+            try:
+                subprocess.run([muscle_path,"-align",tmp_in_path,"-output",tmp_out_path], check=True)
+            except subprocess.CalledProcessError as e:
+                result_display.setText(f"Error running Muscle: {e}")
+                return
+
+            # Parse aligned sequences
+            aligned_dict = {}
+            current_label = None
+            seq_order = []
+            with open(tmp_out_path,'r') as f:
+                for line in f:
+                    line=line.strip()
+                    if line.startswith(">"):
+                        current_label = line[1:]
+                        aligned_dict[current_label] = ""
+                        seq_order.append(current_label)
+                    else:
+                        aligned_dict[current_label] += line
+
+            # Pad sequences
+            max_len = max(len(s) for s in aligned_dict.values())
+            for k in aligned_dict:
+                aligned_dict[k] = aligned_dict[k].ljust(max_len,'-')
+
+            # Display results
+            result_display.clear()
+            cursor = result_display.textCursor()
+            for label in seq_order:
+                row = aligned_dict[label]
+                cursor.insertText(f"{label:<5} ")
+                for i,c in enumerate(row):
+                    fmt = QTextCharFormat()
+                    col_chars = [s[i] for s in aligned_dict.values()]
+                    if col_chars.count(c)!=len(col_chars):
+                        fmt.setForeground(QColor("red"))
+                    cursor.insertText(c,fmt)
+                cursor.insertText("\n")
+
+        align_btn = QPushButton("Align")
+        layout.addWidget(align_btn)
+        align_btn.clicked.connect(do_align)
+        dlg.exec_()
+
 if __name__=="__main__":
     app = QApplication(sys.argv)
     win = DNATranslator()
     win.show()
     sys.exit(app.exec_())
-    
