@@ -1,112 +1,133 @@
-# DNA analyzer
+# DNA Analyzer 2.0
 
-## Overview
+DNA Analyzer is a fast native desktop application for DNA and RNA analysis. It is written in Rust with egui and builds from one codebase for Windows, macOS, and Linux. The application does not require Python, PyQt, or Biopython at runtime.
 
-This is a Python-based GUI tool built with **PyQt5** and **Biopython** for sequence analysis. It allows you to:
+## Screenshots
 
-- Input DNA or RNA sequences.
-- Display **complement**, **reverse**, and **reverse-complement** sequences.
-- Perform **six-frame translation** (optional display).
-- Analyze **restriction enzyme sites** with keyword search/filter.
-- Save sequences in **standard FASTA/ORIGIN format**.
-- **Search** subsequences and **highlight** matches in a formatted display.
-- **BLAST** search (remote via NCBI)
-- Multiple Sequence **Alignment** (MSA) using MUSCLE
+### Main analysis window
 
-![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main//screenshot1.png)
+![DNA Analyzer main window](docs/images/main-window.png)
 
-![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main/screenshot2.png)
+### Multiple sequence alignment
 
-![GUI](https://raw.githubusercontent.com/zhaoshuoxp/DNAanalyzer/refs/heads/main/screenshot3.png)
+![Multiple sequence alignment window](docs/images/multiple-alignment.png)
 
-------
+## Features
 
-## Requirements
+- Automatic DNA and RNA detection and cleanup
+- Complete IUPAC ambiguous-base support
+- Complement, reverse, reverse-complement, and GC calculations
+- Six-frame translation for forward and reverse-complement strands
+- Parallel scanning against 1,088 restriction enzyme definitions
+- Restriction enzyme results in the right side of the main window
+- Overlapping subsequence search with numbered ORIGIN-style highlighting
+- NCBI BLAST integration through the default web browser
+- Multiple sequence alignment in a separate native window
+- MUSCLE alignment with a built-in Rust progressive aligner as fallback
+- FASTA, GenBank ORIGIN, and plain-sequence input
+- File drag and drop
+- Numbered ORIGIN-style export compatible with the original application
 
-- PyQt5
-- Biopython
-- Python 3.8+
-- MUSCLE executable (place in the same directory as the script if using MSA) 
-  - gcc@11 required by macOS MUSCLE, install by `brew install gcc@11`
-- Internet access if using NCBI BLAST remote search
+## User interface
 
-Install dependencies:
+The main window preserves the layout of the original application. Search, translation, restriction analysis, BLAST, multiple alignment, and save controls remain in their original positions. Restriction results expand on the far right. Search and multiple alignment open as independent native windows rather than tabs.
 
-```
-pip install pyqt5 biopython
-```
+## Run from source
 
-------
+Install a stable Rust toolchain, then run:
 
-## Usage
-
-Run the GUI:
-
-```
-python dna_translator.py
+```bash
+cargo run --release
 ```
 
-### Features
+DNA Analyzer searches for MUSCLE in this order:
 
-1. **Input Sequence**: Paste or type DNA/RNA sequence.
-2. **Complement / Reverse / Reverse-Complement**: Displayed in separate areas.
-3. **Six-frame Translation**: Click the "Translate 6-Frames" button to show.
-4. **Restriction Enzyme Analysis**: Click "Show Restriction Enzymes" to display sites. Filter by enzyme name if needed.
-5. **Search Subsequence**: Click the button to open a search dialog. Subsequence matches are highlighted in **ORIGIN/FASTA format**.
-6. **Save as FASTA**: Save the sequence in a standard, formatted FASTA file.
-7. **Run BLAST**: re-direct to NCBI blast webpage.
-- **Run Multiple Sequence Alignment (MSA)**:
-  - Add/remove sequences dynamically
-  - MUSCLE executable auto-detection by OS:
-    - `muscle-osx-x86` for macOS
-    - `muscle-linux-x86` for Linux
-    - `muscle-win64.exe` for Windows
-  - Aligned output shown with mismatches in **red**
+1. The `MUSCLE_PATH` environment variable
+2. The executable directory or application resource directory
+3. The current directory
+4. `muscle` or `muscle5` on the system `PATH`
 
-------
+The repository includes platform-specific MUSCLE executables:
 
-## Package into Single App (macOS example)
+- `muscle-win64.exe`
+- `muscle-osx-arm64`
+- `muscle-osx-x86`
+- `muscle-linux-x86`
 
-You can create a standalone macOS `.app` using **pyinstaller**.
+If MUSCLE cannot run, DNA Analyzer automatically uses its built-in Rust alignment engine.
 
-### 1. Install PyInstaller
+## ORIGIN-style export
 
-```
-pip install pyinstaller
+The `Save as Fasta` button deliberately preserves the original application's numbered ORIGIN-style output. The result is not standard FASTA sequence wrapping. It contains a FASTA header, one-based line coordinates, groups of 10 bases, up to 60 bases per line, and a final `//` marker.
+
+```text
+>sequence_1
+        1 ACGTACGTAC ACGTACGTAC
+//
 ```
 
-### 2. Package the app
+## Test
 
-```
-pyinstaller --name "DNAanalyzer" --add-data "muscle-osx-x86:." --icon app.icns --onefile --windowed dna_translator.py
-```
-
-- `--onefile` generates a single executable.
-- `--windowed` prevents a terminal window from opening.
-- `--add-data` includes the MUSCLE binary for aligning.
-
-After packaging, the `.app` will be inside the `dist` folder.
-
-### 3. Gatekeeper (macOS security)
-
-If macOS blocks the app:
-
-```
-xattr -d com.apple.quarantine /path/to/DNAanalyzer.app
+```bash
+cargo fmt -- --check
+cargo test --locked
+cargo clippy --all-targets -- -D warnings
 ```
 
-- Or allow from **System Preferences → Security & Privacy**.
+The test suite covers input parsing, IUPAC complements, six-frame translation, overlapping search, ORIGIN-style export, forward and reverse restriction cuts, the built-in progressive aligner, and MUSCLE FASTA parsing.
 
-------
+## Build release packages
 
-## Notes
+Build an optimized native executable:
 
-- Input sequences are automatically cleaned (invalid characters removed).
-- RNA sequences are automatically detected, and A:U pairing is used.
-- Restriction enzyme analysis uses **Biopython AllEnzymes**.
+```bash
+cargo build --locked --release
+```
 
-------
+Build a complete macOS application bundle:
+
+```bash
+brew install gcc@11
+scripts/package_macos.sh
+```
+
+The output is written to:
+
+```text
+target/release/bundle/macos/DNA Analyzer.app
+```
+
+The packaging script copies `libgomp`, `libstdc++`, and `libgcc_s` into `Contents/Frameworks`, rewrites MUSCLE's load paths, and signs the complete bundle. The destination Mac does not need Homebrew or GCC. The build machine needs `gcc@11` only while assembling the application.
+
+Native window-state persistence is disabled to avoid the AppKit Touch Bar KVO teardown crash seen on some Intel Macs. Search and multiple alignment use dedicated window processes, and the main application cleans them up when it exits.
+
+GitHub Actions tests the analysis core and produces these artifacts:
+
+- Windows x64 ZIP
+- macOS Apple Silicon application bundle
+- macOS Intel application bundle
+- Linux x64 tarball
+
+Public macOS distribution still requires Apple Developer ID signing and notarization. Public Windows distribution should use Authenticode signing.
+
+## Project structure
+
+```text
+src/lib.rs                         Sequence parsing and analysis core
+src/restriction.rs                 Parallel restriction enzyme scanner
+src/alignment.rs                   MUSCLE runner and built-in alignment engine
+src/app.rs                         Native egui interface
+assets/restriction_enzymes.tsv     Compiled restriction enzyme data
+docs/images/                       Application screenshots
+tools/generate_restriction_db.py   Restriction database maintenance tool
+scripts/package_macos.sh           Self-contained macOS bundle builder
+.github/workflows/build.yml        Cross-platform continuous integration
+```
+
+The restriction enzyme table was generated from Biopython 1.86 `Bio.Restriction` data. Python is required only when a maintainer regenerates this static table.
+
+MUSCLE and the bundled GCC runtime libraries retain their respective open-source licenses. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 ## License
 
-MIT License
+MIT

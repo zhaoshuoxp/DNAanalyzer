@@ -1,0 +1,19 @@
+[package]
+name = "dna-analyzer"
+version = "2.0.0"
+edition = "2024"
+description = "Fast cross-platform DNA/RNA analysis desktop application"
+license = "MIT"
+repository = "https://github.com/zhaoshuoxp/DNAanalyzer"
+
+[dependencies]
+eframe = { version = "0.33", default-features = false, features = ["accesskit", "default_fonts", "glow", "wayland", "x11"] }
+rayon = "1.11"
+rfd = "0.15"
+tempfile = "3.21"
+webbrowser = "1.0"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

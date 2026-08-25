@@ -1,0 +1,86 @@
+name: Build and test
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test analysis core
+        run: cargo test --locked
+
+  build:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: aarch64-apple-darwin
+            executable: dna-analyzer
+            muscle: muscle-osx-arm64
+            artifact: DNA-Analyzer-macOS-Apple-Silicon
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            executable: dna-analyzer
+            muscle: muscle-osx-x86
+            artifact: DNA-Analyzer-macOS-Intel
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            executable: dna-analyzer.exe
+            muscle: muscle-win64.exe
+            artifact: DNA-Analyzer-Windows-x64
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            executable: dna-analyzer
+            muscle: muscle-linux-x86
+            artifact: DNA-Analyzer-Linux-x64
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - name: Install macOS packaging runtime
+        if: runner.os == 'macOS'
+        run: brew install gcc@11
+      - name: Build native release
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - name: Assemble application
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXECUTABLE: ${{ matrix.executable }}
+          MUSCLE: ${{ matrix.muscle }}
+          ARTIFACT: ${{ matrix.artifact }}
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            export DNA_ANALYZER_BINARY="$PWD/target/$TARGET/release/$EXECUTABLE"
+            export DNA_ANALYZER_APP_OUTPUT="$PWD/package/DNA Analyzer.app"
+            scripts/package_macos.sh
+            tar -czf "$ARTIFACT.tar.gz" -C package "DNA Analyzer.app"
+          else
+            mkdir -p "package/DNA Analyzer"
+            cp "target/$TARGET/release/$EXECUTABLE" "package/DNA Analyzer/$EXECUTABLE"
+            cp "$MUSCLE" "package/DNA Analyzer/$MUSCLE"
+            cp THIRD_PARTY_NOTICES.md "package/DNA Analyzer/THIRD_PARTY_NOTICES.md"
+            if [[ "$RUNNER_OS" == "Windows" ]]; then
+              7z a "$ARTIFACT.zip" "./package/DNA Analyzer/*"
+            else
+              chmod +x "package/DNA Analyzer/$EXECUTABLE" "package/DNA Analyzer/$MUSCLE"
+              tar -czf "$ARTIFACT.tar.gz" -C package "DNA Analyzer"
+            fi
+          fi
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+          if-no-files-found: error
