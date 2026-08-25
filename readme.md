@@ -32,6 +32,13 @@ DNA Analyzer is a fast native desktop application for DNA and RNA analysis. It i
 
 The main window preserves the layout of the original application. Search, translation, restriction analysis, BLAST, multiple alignment, and save controls remain in their original positions. Restriction results expand on the far right. Search and multiple alignment open as independent native windows rather than tabs.
 
+## Opening an unsigned macOS build
+
+Release artifacts are unsigned unless the repository's Apple signing secrets are configured. If macOS blocks the application after you have downloaded it from this repository's GitHub Releases page and verified its checksum, move the application to /Applications, then remove its quarantine attribute:
+
+xattr -dr com.apple.quarantine "/Applications/OpenVectorEditor.app"
+Only run this command for an application whose source you trust. It recursively removes the Gatekeeper quarantine attribute from that application bundle.
+
 ## Run from source
 
 Install a stable Rust toolchain, then run:
