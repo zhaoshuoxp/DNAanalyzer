@@ -23,6 +23,26 @@ impl MoleculeKind {
     }
 }
 
+/// The text format recognized around the nucleotide sequence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InputFormat {
+    Plain,
+    Fasta,
+    GenBankOrigin,
+    Embl,
+}
+
+impl InputFormat {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Plain => "plain or numbered text",
+            Self::Fasta => "FASTA",
+            Self::GenBankOrigin => "GenBank ORIGIN",
+            Self::Embl => "EMBL SQ",
+        }
+    }
+}
+
 /// Cleaned input and its immediately useful derived values.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SequenceAnalysis {
@@ -34,6 +54,7 @@ pub struct SequenceAnalysis {
     pub reverse: String,
     pub reverse_complement: String,
     pub kind: MoleculeKind,
+    pub input_format: InputFormat,
     pub invalid_letters: BTreeSet<char>,
     pub gc_percent: f64,
 }
@@ -47,43 +68,56 @@ impl Default for SequenceAnalysis {
             reverse: String::new(),
             reverse_complement: String::new(),
             kind: MoleculeKind::Dna,
+            input_format: InputFormat::Plain,
             invalid_letters: BTreeSet::new(),
             gc_percent: 0.0,
         }
     }
 }
 
-/// Parse plain sequences, FASTA, or GenBank-like ORIGIN text.
+/// Parse plain/numbered sequences, FASTA, GenBank ORIGIN, or EMBL SQ text.
 ///
-/// Whitespace, digits, punctuation, FASTA headers, and the `ORIGIN`/`//` markers
-/// are ignored. Unsupported alphabetic characters are reported to the caller.
+/// Section markers may have trailing whitespace, and an ORIGIN marker may share
+/// its line with the first numbered sequence row. Unsupported alphabetic
+/// characters inside sequence rows are reported to the caller.
 pub fn analyze_input(raw: &str) -> SequenceAnalysis {
     let mut dna = String::with_capacity(raw.len());
     let mut invalid_letters = BTreeSet::new();
     let mut saw_t = false;
     let mut saw_u = false;
-    let has_origin_section = raw
-        .lines()
-        .any(|line| line.trim().eq_ignore_ascii_case("ORIGIN"));
-    let mut inside_origin = !has_origin_section;
+    let has_origin_section = raw.lines().any(|line| origin_remainder(line).is_some());
+    let has_embl_section = !has_origin_section && raw.lines().any(is_embl_sequence_header);
+    let input_format = if has_origin_section {
+        InputFormat::GenBankOrigin
+    } else if has_embl_section {
+        InputFormat::Embl
+    } else if raw.lines().any(|line| line.trim_start().starts_with('>')) {
+        InputFormat::Fasta
+    } else {
+        InputFormat::Plain
+    };
+    let has_sequence_section = has_origin_section || has_embl_section;
+    let mut inside_sequence_section = !has_sequence_section;
 
     for line in raw.lines() {
         let trimmed = line.trim_start();
-        if trimmed.eq_ignore_ascii_case("ORIGIN") {
-            inside_origin = true;
+        let sequence_text = if let Some(remainder) = origin_remainder(line) {
+            inside_sequence_section = true;
+            remainder
+        } else if is_embl_sequence_header(line) {
+            inside_sequence_section = true;
             continue;
-        }
-        if trimmed.starts_with("//") {
-            if has_origin_section {
-                break;
-            }
+        } else if !inside_sequence_section || trimmed.starts_with('>') || trimmed.starts_with(';') {
             continue;
-        }
-        if !inside_origin || trimmed.starts_with('>') || trimmed.starts_with(';') {
-            continue;
-        }
+        } else {
+            line
+        };
 
-        for ch in line.chars() {
+        let (sequence_text, reached_terminator) = sequence_text
+            .split_once("//")
+            .map_or((sequence_text, false), |(sequence, _)| (sequence, true));
+
+        for ch in sequence_text.chars() {
             if !ch.is_alphabetic() {
                 continue;
             }
@@ -95,6 +129,10 @@ pub fn analyze_input(raw: &str) -> SequenceAnalysis {
             } else {
                 invalid_letters.insert(upper);
             }
+        }
+
+        if reached_terminator && has_sequence_section {
+            break;
         }
     }
 
@@ -124,8 +162,33 @@ pub fn analyze_input(raw: &str) -> SequenceAnalysis {
         reverse: display_alphabet(&reverse_dna, kind),
         reverse_complement: display_alphabet(&reverse_complement_dna, kind),
         kind,
+        input_format,
         invalid_letters,
         gc_percent,
+    }
+}
+
+fn origin_remainder(line: &str) -> Option<&str> {
+    marker_remainder(line, "ORIGIN")
+}
+
+fn is_embl_sequence_header(line: &str) -> bool {
+    marker_remainder(line, "SQ").is_some()
+}
+
+fn marker_remainder<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+    let trimmed = line.trim_start();
+    let keyword = trimmed.get(..marker.len())?;
+    if !keyword.eq_ignore_ascii_case(marker) {
+        return None;
+    }
+
+    let remainder = trimmed.get(marker.len()..)?;
+    match remainder.chars().next() {
+        None => Some(remainder),
+        Some(character) if character.is_whitespace() => Some(remainder.trim_start()),
+        Some(':') => Some(remainder.get(1..)?.trim_start()),
+        Some(_) => None,
     }
 }
 
@@ -289,6 +352,7 @@ mod tests {
         let parsed = analyze_input(">sample human gene\n  1 acgu ry n 60\n//");
         assert_eq!(parsed.dna, "ACGTRYN");
         assert_eq!(parsed.kind, MoleculeKind::Rna);
+        assert_eq!(parsed.input_format, InputFormat::Fasta);
         assert!(parsed.invalid_letters.is_empty());
     }
 
@@ -298,6 +362,40 @@ mod tests {
             "LOCUS       SCU49845 12 bp DNA\nDEFINITION  fake header\nORIGIN\n        1 acgt acgtac gt\n//\n",
         );
         assert_eq!(parsed.dna, "ACGTACGTACGT");
+        assert_eq!(parsed.input_format, InputFormat::GenBankOrigin);
+    }
+
+    #[test]
+    fn reads_origin_marker_with_trailing_spaces() {
+        let parsed = analyze_input("ORIGIN               \n        1 acgt acgt\n//\n");
+        assert_eq!(parsed.dna, "ACGTACGT");
+        assert_eq!(parsed.input_format, InputFormat::GenBankOrigin);
+        assert!(parsed.invalid_letters.is_empty());
+    }
+
+    #[test]
+    fn reads_sequence_on_the_origin_marker_line() {
+        let parsed = analyze_input(
+            "ORIGIN               1 agcgacacat cacacgggct\n\
+                    21 caacagtgta gttggtgttc //\n\
+             FEATURES             ignored after terminator\n",
+        );
+        assert_eq!(parsed.dna, "AGCGACACATCACACGGGCTCAACAGTGTAGTTGGTGTTC");
+        assert_eq!(parsed.input_format, InputFormat::GenBankOrigin);
+        assert!(parsed.invalid_letters.is_empty());
+    }
+
+    #[test]
+    fn reads_embl_sq_sequence_rows() {
+        let parsed = analyze_input(
+            "ID   TEST; SV 1; linear; genomic DNA; STD; UNC; 12 BP.\n\
+             SQ   Sequence 12 BP; 3 A; 3 C; 3 G; 3 T;\n\
+                  acgt acgtac gt 12\n\
+             //\n",
+        );
+        assert_eq!(parsed.dna, "ACGTACGTACGT");
+        assert_eq!(parsed.input_format, InputFormat::Embl);
+        assert!(parsed.invalid_letters.is_empty());
     }
 
     #[test]

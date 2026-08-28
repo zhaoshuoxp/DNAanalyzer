@@ -128,7 +128,23 @@ impl DnaAnalyzerApp {
         self.analysis = analyze_input(&self.input);
         self.translations = six_frame_translation(&self.analysis.dna);
         self.search_matches = find_overlapping(&self.analysis.dna, &self.search_query);
+        self.restriction_task = None;
+        self.restriction_hits.clear();
         self.restriction_bases = None;
+        if self.input.trim().is_empty() {
+            self.status.clear();
+            self.status_is_error = false;
+        } else if self.analysis.dna.is_empty() {
+            self.set_error("No valid DNA or RNA bases found.");
+        } else {
+            self.status = format!(
+                "Parsed {} {} bases ({}).",
+                self.analysis.dna.len(),
+                self.analysis.kind.label(),
+                self.analysis.input_format.label()
+            );
+            self.status_is_error = false;
+        }
     }
 
     fn poll_tasks(&mut self, context: &egui::Context) {
@@ -404,13 +420,21 @@ impl DnaAnalyzerApp {
     fn main_analysis_ui(&mut self, ui: &mut egui::Ui) {
         self.warning_line(ui);
         ui.label("Enter DNA or RNA sequence (A/T/G/C/U):");
-        let response = ui.add_sized(
-            [ui.available_width(), 145.0],
-            TextEdit::multiline(&mut self.input)
-                .font(TextStyle::Monospace)
-                .hint_text("Paste DNA, RNA, FASTA, or GenBank ORIGIN text here…")
-                .lock_focus(true),
-        );
+        let response = ScrollArea::vertical()
+            .id_salt("main_sequence_input")
+            .max_height(145.0)
+            .min_scrolled_height(145.0)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                ui.add_sized(
+                    [ui.available_width(), 145.0],
+                    TextEdit::multiline(&mut self.input)
+                        .font(TextStyle::Monospace)
+                        .hint_text("Paste DNA, RNA, FASTA, or GenBank ORIGIN text here…")
+                        .lock_focus(true),
+                )
+            })
+            .inner;
         if response.changed() {
             self.refresh_analysis();
         }
@@ -508,9 +532,10 @@ impl DnaAnalyzerApp {
                 ui.label("Analyzing…");
             });
         }
-        if self.restriction_bases != Some(self.analysis.dna.len())
-            && !self.restriction_hits.is_empty()
-        {
+        let needs_refresh = !self.analysis.dna.is_empty()
+            && self.restriction_task.is_none()
+            && self.restriction_bases != Some(self.analysis.dna.len());
+        if needs_refresh {
             ui.label(
                 RichText::new("Sequence changed; click Show Restriction Enzymes to refresh.")
                     .color(ui.visuals().warn_fg_color),
@@ -543,7 +568,13 @@ impl DnaAnalyzerApp {
             ));
         }
         if text.is_empty() && self.restriction_task.is_none() {
-            text = "No cutting enzymes found.".to_owned();
+            text = if self.analysis.dna.is_empty() {
+                "Enter a sequence to analyze.".to_owned()
+            } else if needs_refresh {
+                "Restriction results are waiting to be refreshed.".to_owned()
+            } else {
+                "No cutting enzymes found.".to_owned()
+            };
         }
         ui.add_sized(
             ui.available_size(),
