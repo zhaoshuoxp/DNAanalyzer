@@ -1,3 +1,4 @@
+use crate::theme::{self, Palette, stroke};
 use dna_analyzer::alignment::{self, AlignmentResult};
 use dna_analyzer::restriction::{self, RestrictionHit};
 use dna_analyzer::{
@@ -5,7 +6,8 @@ use dna_analyzer::{
     six_frame_translation,
 };
 use eframe::egui::{
-    self, Color32, FontId, RichText, ScrollArea, TextEdit, TextFormat, TextStyle, text::LayoutJob,
+    self, Align, Color32, FontId, Label, Layout, Margin, RichText, ScrollArea, TextEdit,
+    TextFormat, TextStyle, text::LayoutJob,
 };
 use std::fs;
 use std::io::Write;
@@ -13,15 +15,53 @@ use std::process::{Child, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
+const BUTTON_HEIGHT: f32 = 28.0;
+const INPUT_HEIGHT: f32 = 145.0;
+const OUTPUT_HEIGHT: f32 = 92.0;
+
 struct RestrictionTask {
     receiver: Receiver<Vec<RestrictionHit>>,
     started: Instant,
-    bases: usize,
 }
 
 struct AlignmentTask {
     receiver: Receiver<Result<AlignmentResult, String>>,
     started: Instant,
+}
+
+/// A restriction hit with its display text prepared once, not every frame.
+struct RestrictionRow {
+    name: String,
+    site: String,
+    site_label: String,
+    positions: String,
+}
+
+impl From<RestrictionHit> for RestrictionRow {
+    fn from(hit: RestrictionHit) -> Self {
+        let positions = hit
+            .positions
+            .iter()
+            .map(usize::to_string)
+            .collect::<Vec<_>>()
+            .join(", ");
+        Self {
+            site_label: format!(" ({}): ", hit.site),
+            name: hit.name,
+            site: hit.site,
+            positions,
+        }
+    }
+}
+
+impl RestrictionRow {
+    fn matches(&self, keywords: &[String]) -> bool {
+        keywords.is_empty()
+            || keywords.iter().any(|keyword| {
+                contains_ignore_ascii_case(&self.name, keyword)
+                    || contains_ignore_ascii_case(&self.site, keyword)
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -30,6 +70,25 @@ pub enum AppMode {
     Search,
     Alignment,
 }
+
+#[derive(Clone, Copy)]
+enum MainAction {
+    Clear,
+    Translate,
+    Restriction,
+    Blast,
+    Alignment,
+    Save,
+}
+
+const MAIN_ACTIONS: [(&str, MainAction); 6] = [
+    ("Clear", MainAction::Clear),
+    ("Translate 6-Frames", MainAction::Translate),
+    ("Show Restriction Enzymes", MainAction::Restriction),
+    ("NCBI BLAST", MainAction::Blast),
+    ("Multiple Alignment", MainAction::Alignment),
+    ("Save as Fasta", MainAction::Save),
+];
 
 pub struct DnaAnalyzerApp {
     mode: AppMode,
@@ -43,11 +102,13 @@ pub struct DnaAnalyzerApp {
 
     restriction_visible: bool,
     restriction_filter: String,
-    restriction_hits: Vec<RestrictionHit>,
+    restriction_rows: Vec<RestrictionRow>,
     restriction_task: Option<RestrictionTask>,
-    restriction_bases: Option<usize>,
+    /// Whether `restriction_rows` belongs to the current sequence.
+    restriction_fresh: bool,
 
     search_query: String,
+    search_query_len: usize,
     search_matches: Vec<usize>,
 
     alignment_inputs: Vec<String>,
@@ -62,12 +123,7 @@ impl DnaAnalyzerApp {
         mode: AppMode,
         initial_input: Option<String>,
     ) -> Self {
-        creation_context
-            .egui_ctx
-            .set_visuals(egui::Visuals::light());
-        creation_context
-            .egui_ctx
-            .style_mut(|style| style.spacing.item_spacing = egui::vec2(8.0, 8.0));
+        theme::install(&creation_context.egui_ctx);
 
         let mut app = Self {
             mode,
@@ -80,10 +136,11 @@ impl DnaAnalyzerApp {
             status_is_error: false,
             restriction_visible: false,
             restriction_filter: String::new(),
-            restriction_hits: Vec::new(),
+            restriction_rows: Vec::new(),
             restriction_task: None,
-            restriction_bases: None,
+            restriction_fresh: false,
             search_query: String::new(),
+            search_query_len: 0,
             search_matches: Vec::new(),
             alignment_inputs: vec![String::new(), String::new()],
             alignment_result: None,
@@ -127,24 +184,27 @@ impl DnaAnalyzerApp {
     fn refresh_analysis(&mut self) {
         self.analysis = analyze_input(&self.input);
         self.translations = six_frame_translation(&self.analysis.dna);
-        self.search_matches = find_overlapping(&self.analysis.dna, &self.search_query);
+        self.refresh_search();
         self.restriction_task = None;
-        self.restriction_hits.clear();
-        self.restriction_bases = None;
+        self.restriction_rows.clear();
+        self.restriction_fresh = false;
         if self.input.trim().is_empty() {
-            self.status.clear();
-            self.status_is_error = false;
+            self.set_status("");
         } else if self.analysis.dna.is_empty() {
             self.set_error("No valid DNA or RNA bases found.");
         } else {
-            self.status = format!(
+            self.set_status(format!(
                 "Parsed {} {} bases ({}).",
                 self.analysis.dna.len(),
                 self.analysis.kind.label(),
                 self.analysis.input_format.label()
-            );
-            self.status_is_error = false;
+            ));
         }
+    }
+
+    fn refresh_search(&mut self) {
+        self.search_query_len = analyze_input(&self.search_query).dna.len();
+        self.search_matches = find_overlapping(&self.analysis.dna, &self.search_query);
     }
 
     fn poll_tasks(&mut self, context: &egui::Context) {
@@ -152,7 +212,7 @@ impl DnaAnalyzerApp {
             self.restriction_task
                 .as_ref()
                 .and_then(|task| match task.receiver.try_recv() {
-                    Ok(hits) => Some(Ok((hits, task.bases, task.started.elapsed()))),
+                    Ok(hits) => Some(Ok((hits, task.started.elapsed()))),
                     Err(TryRecvError::Disconnected) => {
                         Some(Err("Restriction analysis worker stopped unexpectedly."))
                     }
@@ -161,15 +221,14 @@ impl DnaAnalyzerApp {
         if let Some(update) = restriction_update {
             self.restriction_task = None;
             match update {
-                Ok((hits, bases, elapsed)) => {
-                    self.status = format!(
+                Ok((hits, elapsed)) => {
+                    self.set_status(format!(
                         "Found {} cutting enzymes in {:.1} ms.",
                         hits.len(),
                         elapsed.as_secs_f64() * 1_000.0
-                    );
-                    self.status_is_error = false;
-                    self.restriction_hits = hits;
-                    self.restriction_bases = Some(bases);
+                    ));
+                    self.restriction_rows = hits.into_iter().map(RestrictionRow::from).collect();
+                    self.restriction_fresh = true;
                 }
                 Err(message) => self.set_error(message),
             }
@@ -190,13 +249,12 @@ impl DnaAnalyzerApp {
             self.alignment_task = None;
             match result {
                 Ok(alignment) => {
-                    self.status = format!(
+                    self.set_status(format!(
                         "Aligned {} sequences with {} in {:.2} s.",
                         alignment.sequences.len(),
                         alignment.engine,
                         elapsed.as_secs_f64()
-                    );
-                    self.status_is_error = false;
+                    ));
                     self.alignment_result = Some(alignment);
                 }
                 Err(message) => self.set_error(message),
@@ -212,17 +270,21 @@ impl DnaAnalyzerApp {
     }
 
     fn handle_dropped_files(&mut self, context: &egui::Context) {
-        let paths: Vec<_> = context.input(|input| {
+        let path = context.input(|input| {
             input
                 .raw
                 .dropped_files
                 .iter()
-                .filter_map(|file| file.path.clone())
-                .collect()
+                .find_map(|file| file.path.clone())
         });
-        if let Some(path) = paths.first() {
-            self.load_file(path);
+        if let Some(path) = path {
+            self.load_file(&path);
         }
+    }
+
+    fn set_status(&mut self, message: impl Into<String>) {
+        self.status = message.into();
+        self.status_is_error = false;
     }
 
     fn set_error(&mut self, message: impl Into<String>) {
@@ -238,8 +300,9 @@ impl DnaAnalyzerApp {
                     self.fasta_name = stem.to_owned();
                 }
                 self.refresh_analysis();
-                self.status = format!("Loaded {} bases.", self.analysis.dna.len());
-                self.status_is_error = false;
+                if !self.analysis.dna.is_empty() {
+                    self.set_status(format!("Loaded {} bases.", self.analysis.dna.len()));
+                }
             }
             Err(error) => self.set_error(format!("Could not open {}: {error}", path.display())),
         }
@@ -259,8 +322,10 @@ impl DnaAnalyzerApp {
             let contents = format_origin_export(&self.fasta_name, &self.analysis.display);
             match fs::write(&path, contents) {
                 Ok(()) => {
-                    self.status = format!("Saved numbered ORIGIN sequence to {}.", path.display());
-                    self.status_is_error = false;
+                    self.set_status(format!(
+                        "Saved numbered ORIGIN sequence to {}.",
+                        path.display()
+                    ));
                 }
                 Err(error) => self.set_error(format!("Could not save {}: {error}", path.display())),
             }
@@ -277,10 +342,7 @@ impl DnaAnalyzerApp {
             self.analysis.dna
         );
         match webbrowser::open(&url) {
-            Ok(()) => {
-                self.status = "Opened NCBI BLAST in the default browser.".to_owned();
-                self.status_is_error = false;
-            }
+            Ok(()) => self.set_status("Opened NCBI BLAST in the default browser."),
             Err(error) => self.set_error(format!("Could not open the browser: {error}")),
         }
     }
@@ -299,13 +361,11 @@ impl DnaAnalyzerApp {
         self.restriction_task = Some(RestrictionTask {
             receiver,
             started: Instant::now(),
-            bases,
         });
-        self.status = format!(
+        self.set_status(format!(
             "Scanning {bases} bases against {} enzymes…",
             restriction::enzymes().len()
-        );
-        self.status_is_error = false;
+        ));
     }
 
     fn start_alignment(&mut self) {
@@ -321,8 +381,7 @@ impl DnaAnalyzerApp {
             receiver,
             started: Instant::now(),
         });
-        self.status = "Running multiple sequence alignment…".to_owned();
-        self.status_is_error = false;
+        self.set_status("Running multiple sequence alignment…");
     }
 
     fn open_search_window(&mut self) {
@@ -330,107 +389,77 @@ impl DnaAnalyzerApp {
             self.set_error("Enter sequence first.");
             return;
         }
-        let executable = match std::env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                self.set_error(format!("Could not locate this application: {error}"));
-                return;
-            }
-        };
-        let mut child = match Command::new(executable)
-            .arg("--search-window")
-            .stdin(Stdio::piped())
-            .spawn()
-        {
-            Ok(child) => child,
-            Err(error) => {
-                self.set_error(format!("Could not open the search window: {error}"));
-                return;
-            }
-        };
-        let write_result = child
-            .stdin
-            .take()
-            .ok_or_else(|| "Search window input pipe was unavailable.".to_owned())
-            .and_then(|mut input| {
-                input
-                    .write_all(self.analysis.display.as_bytes())
-                    .map_err(|error| format!("Could not send sequence to search window: {error}"))
-            });
-        if let Err(message) = write_result {
-            let _ = child.kill();
-            let _ = child.wait();
-            self.set_error(message);
-            return;
-        }
-        self.child_processes.push(child);
-        self.status = "Opened sequence search in a new window.".to_owned();
-        self.status_is_error = false;
+        let spawned = spawn_window(
+            "--search-window",
+            "sequence search",
+            Some(&self.analysis.display),
+        );
+        self.track_window("sequence search", spawned);
     }
 
-    fn open_alignment_window(&mut self) {
-        let executable = match std::env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                self.set_error(format!("Could not locate this application: {error}"));
-                return;
-            }
-        };
-        match Command::new(executable).arg("--alignment-window").spawn() {
+    fn track_window(&mut self, name: &str, spawned: Result<Child, String>) {
+        match spawned {
             Ok(child) => {
                 self.child_processes.push(child);
-                self.status = "Opened multiple alignment in a new window.".to_owned();
-                self.status_is_error = false;
+                self.set_status(format!("Opened {name} in a new window."));
             }
-            Err(error) => {
-                self.set_error(format!("Could not open the alignment window: {error}"));
-            }
+            Err(message) => self.set_error(message),
         }
     }
 
-    fn warning_line(&self, ui: &mut egui::Ui) {
+    /// Status or input warnings on the left, sequence statistics on the right.
+    fn status_line(&self, ui: &mut egui::Ui, show_stats: bool) {
+        let palette = Palette::of(ui);
         let mut warnings = Vec::new();
-        if self.analysis.kind == MoleculeKind::Rna {
-            warnings.push("RNA detected, using A:U base pairing.".to_owned());
-        } else if self.analysis.kind == MoleculeKind::Mixed {
-            warnings.push("Both T and U detected; U is normalized to T for analysis.".to_owned());
+        match self.analysis.kind {
+            MoleculeKind::Rna => warnings.push("RNA detected, using A:U base pairing.".to_owned()),
+            MoleculeKind::Mixed => warnings
+                .push("Both T and U detected; U is normalized to T for analysis.".to_owned()),
+            MoleculeKind::Dna => {}
         }
         if !self.analysis.invalid_letters.is_empty() {
             let invalid: String = self.analysis.invalid_letters.iter().collect();
             warnings.push(format!("Invalid characters removed: {invalid}"));
         }
+        let (message, color) = if !warnings.is_empty() {
+            (warnings.join("  ·  "), palette.warn)
+        } else if self.status_is_error {
+            (self.status.clone(), palette.error)
+        } else {
+            (self.status.clone(), palette.text_weak)
+        };
 
-        let (message, error) = if warnings.is_empty() {
-            (&self.status, self.status_is_error)
-        } else {
-            // This branch needs an owned joined value that lives through the label call.
-            let joined = warnings.join(" | ");
-            let color = ui.visuals().error_fg_color;
-            ui.label(RichText::new(joined).color(color));
-            return;
-        };
-        let color = if error {
-            ui.visuals().error_fg_color
-        } else {
-            ui.visuals().weak_text_color()
-        };
-        ui.label(RichText::new(message).color(color));
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(message).color(color));
+            if show_stats && !self.analysis.dna.is_empty() {
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    let stats = format!(
+                        "{}  ·  {} bp  ·  GC {:.1}%",
+                        self.analysis.kind.label(),
+                        group_thousands(self.analysis.dna.len()),
+                        self.analysis.gc_percent
+                    );
+                    ui.label(RichText::new(stats).color(palette.text_weak));
+                });
+            }
+        });
     }
 
     fn main_analysis_ui(&mut self, ui: &mut egui::Ui) {
-        self.warning_line(ui);
-        ui.label("Enter DNA or RNA sequence (A/T/G/C/U):");
+        self.status_line(ui, true);
+        theme::caption(ui, "Enter DNA or RNA sequence (A/T/G/C/U):");
         let response = ScrollArea::vertical()
             .id_salt("main_sequence_input")
-            .max_height(145.0)
-            .min_scrolled_height(145.0)
+            .max_height(INPUT_HEIGHT)
+            .min_scrolled_height(INPUT_HEIGHT)
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.add_sized(
-                    [ui.available_width(), 145.0],
+                    [ui.available_width(), INPUT_HEIGHT],
                     TextEdit::multiline(&mut self.input)
                         .font(TextStyle::Monospace)
                         .hint_text("Paste DNA, RNA, FASTA, or GenBank ORIGIN text here…")
+                        .margin(Margin::symmetric(8, 6))
                         .lock_focus(true),
                 )
             })
@@ -439,80 +468,71 @@ impl DnaAnalyzerApp {
             self.refresh_analysis();
         }
 
-        if full_width_button(ui, "Search Subsequence").clicked() {
+        let has_sequence = !self.analysis.dna.is_empty();
+        if theme::wide_button(ui, has_sequence, true, "Search Subsequence").clicked() {
             self.open_search_window();
         }
 
-        let mut actions = [false; 6];
-        ui.columns(6, |columns| {
-            let labels = [
-                "Clear",
-                "Translate 6-Frames",
-                "Show Restriction Enzymes",
-                "NCBI BLAST",
-                "Multiple Alignment",
-                "Save as Fasta",
-            ];
-            for (index, column) in columns.iter_mut().enumerate() {
-                actions[index] = column
-                    .add_sized(
-                        [column.available_width(), 28.0],
-                        egui::Button::new(labels[index]),
-                    )
-                    .clicked();
+        let mut action = None;
+        ui.columns(MAIN_ACTIONS.len(), |columns| {
+            for (column, (label, candidate)) in columns.iter_mut().zip(MAIN_ACTIONS) {
+                if theme::wide_button(column, true, false, label).clicked() {
+                    action = Some(candidate);
+                }
             }
         });
-
-        if actions[0] {
-            self.input.clear();
-            self.refresh_analysis();
-        }
-        if actions[1] {
-            self.translation_visible = true;
-        }
-        if actions[2] {
-            self.restriction_visible = true;
-            self.start_restriction_analysis();
-        }
-        if actions[3] {
-            self.open_blast();
-        }
-        if actions[4] {
-            self.open_alignment_window();
-        }
-        if actions[5] {
-            self.save_origin();
+        match action {
+            Some(MainAction::Clear) => {
+                self.input.clear();
+                self.refresh_analysis();
+            }
+            Some(MainAction::Translate) => self.translation_visible = true,
+            Some(MainAction::Restriction) => {
+                self.restriction_visible = true;
+                self.start_restriction_analysis();
+            }
+            Some(MainAction::Blast) => self.open_blast(),
+            Some(MainAction::Alignment) => {
+                let spawned = spawn_window("--alignment-window", "multiple alignment", None);
+                self.track_window("multiple alignment", spawned);
+            }
+            Some(MainAction::Save) => self.save_origin(),
+            None => {}
         }
 
-        ui.add_space(5.0);
-        ui.columns(3, |columns| {
-            sequence_box(
-                &mut columns[0],
-                "Complement:",
-                "Copy Complement",
-                &self.analysis.complement,
-            );
-            sequence_box(
-                &mut columns[1],
-                "Reverse:",
-                "Copy Reverse",
-                &self.analysis.reverse,
-            );
-            sequence_box(
-                &mut columns[2],
+        ui.add_space(6.0);
+        let outputs = [
+            ("Complement:", "Copy Complement", &self.analysis.complement),
+            ("Reverse:", "Copy Reverse", &self.analysis.reverse),
+            (
                 "Reverse-Complement:",
                 "Copy Reverse-Complement",
                 &self.analysis.reverse_complement,
-            );
+            ),
+        ];
+        let mut copied = None;
+        ui.columns(outputs.len(), |columns| {
+            for (column, (title, copy_label, sequence)) in columns.iter_mut().zip(outputs) {
+                theme::caption(column, title);
+                output_box(column, title, sequence);
+                if theme::wide_button(column, !sequence.is_empty(), false, copy_label).clicked() {
+                    column.ctx().copy_text(sequence.clone());
+                    copied = Some(title.trim_end_matches(':'));
+                }
+            }
         });
+        if let Some(title) = copied {
+            self.set_status(format!("Copied {} to the clipboard.", title.to_lowercase()));
+        }
 
         if self.translation_visible {
-            ui.add_space(5.0);
-            for row in 0..2 {
-                ui.columns(3, |columns| {
-                    for (column, panel) in columns.iter_mut().enumerate() {
-                        let index = row * 3 + column;
-                        translation_box(panel, index + 1, &self.translations[index]);
+            ui.add_space(6.0);
+            for (row, frames) in self.translations.chunks(3).enumerate() {
+                ui.columns(frames.len(), |columns| {
+                    for (index, (column, protein)) in columns.iter_mut().zip(frames).enumerate() {
+                        let title = format!("Frame {}:", row * 3 + index + 1);
+                        theme::caption(column, &title);
+                        output_box(column, &title, protein);
                     }
                 });
             }
@@ -520,167 +540,184 @@ impl DnaAnalyzerApp {
     }
 
     fn restriction_panel_ui(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Restriction Enzyme Sites (1-based):").strong());
+        let palette = Palette::of(ui);
+        ui.label(RichText::new("Restriction Enzyme Sites (1-based)").strong());
         ui.add(
             TextEdit::singleline(&mut self.restriction_filter)
                 .hint_text("Filter enzymes (comma-separated)")
+                .margin(Margin::symmetric(8, 5))
                 .desired_width(f32::INFINITY),
         );
         if self.restriction_task.is_some() {
             ui.horizontal(|ui| {
                 ui.spinner();
-                ui.label("Analyzing…");
+                ui.label(RichText::new("Analyzing…").color(palette.text_weak));
             });
         }
         let needs_refresh = !self.analysis.dna.is_empty()
             && self.restriction_task.is_none()
-            && self.restriction_bases != Some(self.analysis.dna.len());
+            && !self.restriction_fresh;
         if needs_refresh {
             ui.label(
                 RichText::new("Sequence changed; click Show Restriction Enzymes to refresh.")
-                    .color(ui.visuals().warn_fg_color),
+                    .color(palette.warn),
             );
         }
 
         let keywords: Vec<String> = self
             .restriction_filter
             .split(',')
-            .map(|word| word.trim().to_ascii_uppercase())
+            .map(str::trim)
             .filter(|word| !word.is_empty())
+            .map(str::to_owned)
             .collect();
-        let mut text = String::new();
-        for hit in self.restriction_hits.iter().filter(|hit| {
-            keywords.is_empty()
-                || keywords.iter().any(|keyword| {
-                    hit.name.to_ascii_uppercase().contains(keyword)
-                        || hit.site.to_ascii_uppercase().contains(keyword)
-                })
-        }) {
-            text.push_str(&format!(
-                "{} ({}): {}\n",
-                hit.name,
-                hit.site,
-                hit.positions
-                    .iter()
-                    .map(usize::to_string)
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
+        let font = TextStyle::Monospace.resolve(ui.style());
+        let name_format = text_format(&font, palette.accent);
+        let site_format = text_format(&font, palette.text_weak);
+        let positions_format = text_format(&font, palette.text);
+        let mut job = LayoutJob::default();
+        for row in self
+            .restriction_rows
+            .iter()
+            .filter(|row| row.matches(&keywords))
+        {
+            if !job.is_empty() {
+                job.append("\n", 0.0, positions_format.clone());
+            }
+            job.append(&row.name, 0.0, name_format.clone());
+            job.append(&row.site_label, 0.0, site_format.clone());
+            job.append(&row.positions, 0.0, positions_format.clone());
         }
-        if text.is_empty() && self.restriction_task.is_none() {
-            text = if self.analysis.dna.is_empty() {
-                "Enter a sequence to analyze.".to_owned()
-            } else if needs_refresh {
-                "Restriction results are waiting to be refreshed.".to_owned()
-            } else {
-                "No cutting enzymes found.".to_owned()
-            };
-        }
-        ui.add_sized(
-            ui.available_size(),
-            TextEdit::multiline(&mut text)
-                .font(TextStyle::Monospace)
-                .interactive(false),
-        );
+        let placeholder = if !job.is_empty() || self.restriction_task.is_some() {
+            None
+        } else if self.analysis.dna.is_empty() {
+            Some("Enter a sequence to analyze.")
+        } else if needs_refresh {
+            Some("Restriction results are waiting to be refreshed.")
+        } else if self.restriction_rows.is_empty() {
+            Some("No cutting enzymes found.")
+        } else {
+            Some("No enzymes match the filter.")
+        };
+
+        theme::surface_frame(ui).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            ScrollArea::vertical()
+                .id_salt("restriction_results")
+                .auto_shrink([false, false])
+                .show(ui, |ui| match placeholder {
+                    Some(text) => {
+                        ui.label(RichText::new(text).color(palette.text_weak));
+                    }
+                    None => {
+                        ui.add(Label::new(job).wrap());
+                    }
+                });
+        });
     }
 
     fn search_window_ui(&mut self, ui: &mut egui::Ui) {
+        let palette = Palette::of(ui);
         let response = ui.add(
             TextEdit::singleline(&mut self.search_query)
                 .font(TextStyle::Monospace)
                 .hint_text("Search sequence…")
+                .margin(Margin::symmetric(8, 6))
                 .desired_width(f32::INFINITY),
         );
         if response.changed() {
-            self.search_matches = find_overlapping(&self.analysis.dna, &self.search_query);
+            self.refresh_search();
         }
-        let query_len = analyze_input(&self.search_query).dna.len();
+        let summary = match (self.search_query_len, self.search_matches.len()) {
+            (0, _) => format!(
+                "{} bases. Type a subsequence to highlight every occurrence.",
+                group_thousands(self.analysis.dna.len())
+            ),
+            (_, 1) => "1 match".to_owned(),
+            (_, count) => format!("{} matches", group_thousands(count)),
+        };
+        theme::caption(ui, &summary);
+
         let layout = origin_layout(
             &self.analysis.display,
             &self.search_matches,
-            query_len,
-            ui.visuals().text_color(),
+            self.search_query_len,
+            palette,
+            TextStyle::Monospace.resolve(ui.style()),
         );
-        ScrollArea::both()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                ui.label(layout);
-            });
+        theme::surface_frame(ui).show(ui, |ui| {
+            ui.set_min_size(ui.available_size());
+            ScrollArea::both()
+                .auto_shrink([false, false])
+                .show(ui, |ui| ui.add(Label::new(layout).extend()));
+        });
     }
 
     fn alignment_window_ui(&mut self, ui: &mut egui::Ui) {
-        self.warning_line(ui);
+        let palette = Palette::of(ui);
+        self.status_line(ui, false);
         ScrollArea::vertical()
             .id_salt("alignment_sequence_inputs")
             .max_height(310.0)
             .show(ui, |ui| {
-                for sequence in &mut self.alignment_inputs {
+                for (index, sequence) in self.alignment_inputs.iter_mut().enumerate() {
                     ui.add_sized(
                         [ui.available_width(), 58.0],
                         TextEdit::multiline(sequence)
                             .font(TextStyle::Monospace)
-                            .hint_text("Enter DNA/RNA or protein sequence…"),
+                            .margin(Margin::symmetric(8, 6))
+                            .hint_text(format!(
+                                "Sequence {} — enter DNA/RNA or protein sequence…",
+                                index + 1
+                            )),
                     );
                 }
             });
 
+        let can_remove = self.alignment_inputs.len() > 2;
         ui.columns(2, |columns| {
-            if columns[0]
-                .add_sized(
-                    [columns[0].available_width(), 28.0],
-                    egui::Button::new("Add Sequence"),
-                )
-                .clicked()
-            {
+            if theme::wide_button(&mut columns[0], true, false, "Add Sequence").clicked() {
                 self.alignment_inputs.push(String::new());
             }
-            if columns[1]
-                .add_enabled_ui(self.alignment_inputs.len() > 2, |ui| {
-                    ui.add_sized(
-                        [ui.available_width(), 28.0],
-                        egui::Button::new("Remove Sequence"),
-                    )
-                })
-                .inner
-                .clicked()
-            {
+            if theme::wide_button(&mut columns[1], can_remove, false, "Remove Sequence").clicked() {
                 self.alignment_inputs.pop();
             }
         });
 
+        let running = self.alignment_task.is_some();
+        let result_height = (ui.available_height() - BUTTON_HEIGHT - 36.0).max(120.0);
         if let Some(result) = &self.alignment_result {
-            ui.label(
-                RichText::new(&result.engine)
-                    .small()
-                    .color(ui.visuals().weak_text_color()),
-            );
-            ScrollArea::both()
-                .id_salt("alignment_result")
-                .max_height(260.0)
-                .auto_shrink([false, false])
-                .show(ui, |ui| {
-                    ui.label(alignment_layout(result, ui.visuals().text_color()));
-                });
+            theme::caption(ui, &result.engine);
+            let layout =
+                alignment_layout(result, palette, TextStyle::Monospace.resolve(ui.style()));
+            theme::surface_frame(ui).show(ui, |ui| {
+                ui.set_min_width(ui.available_width());
+                ScrollArea::both()
+                    .id_salt("alignment_result")
+                    .max_height(result_height)
+                    .min_scrolled_height(result_height)
+                    .auto_shrink([false, false])
+                    .show(ui, |ui| ui.add(Label::new(layout).extend()));
+            });
         } else {
-            egui::Frame::group(ui.style())
-                .inner_margin(12.0)
-                .show(ui, |ui| {
-                    ui.set_min_height(220.0);
-                    if self.alignment_task.is_some() {
+            theme::caption(ui, "Alignment");
+            theme::surface_frame(ui).show(ui, |ui| {
+                ui.set_min_size(egui::vec2(ui.available_width(), result_height));
+                ui.centered_and_justified(|ui| {
+                    if running {
                         ui.spinner();
+                    } else {
+                        ui.label(
+                            RichText::new("Aligned sequences will appear here.")
+                                .color(palette.text_weak),
+                        );
                     }
                 });
+            });
         }
 
-        let running = self.alignment_task.is_some();
-        if ui
-            .add_enabled(
-                !running,
-                egui::Button::new(if running { "Aligning…" } else { "Align" })
-                    .min_size(egui::vec2(ui.available_width(), 28.0)),
-            )
-            .clicked()
-        {
+        let label = if running { "Aligning…" } else { "Align" };
+        if theme::wide_button(ui, !running, true, label).clicked() {
             self.start_alignment();
         }
     }
@@ -698,143 +735,290 @@ impl Drop for DnaAnalyzerApp {
 impl eframe::App for DnaAnalyzerApp {
     fn update(&mut self, context: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll_tasks(context);
+        let style = context.style();
+        let central = egui::CentralPanel::default().frame(theme::central_frame(&style));
         match self.mode {
             AppMode::Main => {
                 self.handle_dropped_files(context);
                 egui::SidePanel::right("restriction_panel")
+                    .frame(theme::sidebar_frame(&style))
                     .resizable(true)
                     .default_width(360.0)
                     .min_width(280.0)
                     .show_animated(context, self.restriction_visible, |ui| {
                         self.restriction_panel_ui(ui);
                     });
-                egui::CentralPanel::default().show(context, |ui| {
+                central.show(context, |ui| {
                     ScrollArea::vertical()
                         .auto_shrink([false, false])
-                        .show(ui, |ui| self.main_analysis_ui(ui));
+                        .show(ui, |ui| {
+                            // Keep content clear of the floating scroll bar.
+                            egui::Frame::new()
+                                .inner_margin(Margin {
+                                    right: 12,
+                                    ..Margin::ZERO
+                                })
+                                .show(ui, |ui| self.main_analysis_ui(ui));
+                        });
                 });
+                paint_drop_hint(context);
             }
             AppMode::Search => {
-                egui::CentralPanel::default().show(context, |ui| self.search_window_ui(ui));
+                central.show(context, |ui| self.search_window_ui(ui));
             }
             AppMode::Alignment => {
-                egui::CentralPanel::default().show(context, |ui| self.alignment_window_ui(ui));
+                central.show(context, |ui| self.alignment_window_ui(ui));
             }
         }
     }
 }
 
-fn full_width_button(ui: &mut egui::Ui, text: &str) -> egui::Response {
-    ui.add_sized([ui.available_width(), 28.0], egui::Button::new(text))
+/// Outline the window while a file is dragged over it.
+fn paint_drop_hint(context: &egui::Context) {
+    if context.input(|input| input.raw.hovered_files.is_empty()) {
+        return;
+    }
+    let accent = Palette::for_dark_mode(context.style().visuals.dark_mode).accent;
+    let painter = context.layer_painter(egui::LayerId::new(
+        egui::Order::Foreground,
+        egui::Id::new("file_drop_hint"),
+    ));
+    let rect = context.content_rect().shrink(4.0);
+    painter.rect(
+        rect,
+        theme::RADIUS,
+        accent.gamma_multiply(0.08),
+        stroke(2.0, accent),
+        egui::StrokeKind::Inside,
+    );
+    painter.text(
+        rect.center(),
+        egui::Align2::CENTER_CENTER,
+        "Drop a sequence file to load it",
+        FontId::proportional(18.0),
+        accent,
+    );
 }
 
-fn sequence_box(ui: &mut egui::Ui, title: &str, copy_label: &str, sequence: &str) {
-    ui.label(title);
-    let mut display = sequence.to_owned();
-    ui.add_sized(
-        [ui.available_width(), 105.0],
-        TextEdit::multiline(&mut display)
-            .font(TextStyle::Monospace)
-            .interactive(false),
-    );
-    if full_width_button(ui, copy_label).clicked() {
-        ui.ctx().copy_text(sequence.to_owned());
+/// Launch this executable again in a dedicated window mode, optionally
+/// passing text through its standard input.
+fn spawn_window(flag: &str, name: &str, input: Option<&str>) -> Result<Child, String> {
+    let executable = std::env::current_exe()
+        .map_err(|error| format!("Could not locate this application: {error}"))?;
+    let mut command = Command::new(executable);
+    command.arg(flag);
+    if input.is_some() {
+        command.stdin(Stdio::piped());
+    }
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not open the {name} window: {error}"))?;
+    if let Some(text) = input {
+        let written = child
+            .stdin
+            .take()
+            .ok_or_else(|| format!("The {name} window input pipe was unavailable."))
+            .and_then(|mut pipe| {
+                pipe.write_all(text.as_bytes()).map_err(|error| {
+                    format!("Could not send sequence to the {name} window: {error}")
+                })
+            });
+        if let Err(message) = written {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(message);
+        }
+    }
+    Ok(child)
+}
+
+/// A read-only, selectable, scrollable monospace box.
+fn output_box(ui: &mut egui::Ui, id_salt: &str, text: &str) {
+    theme::surface_frame(ui).show(ui, |ui| {
+        ui.set_min_width(ui.available_width());
+        ScrollArea::vertical()
+            .id_salt(id_salt)
+            .max_height(OUTPUT_HEIGHT)
+            .min_scrolled_height(OUTPUT_HEIGHT)
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                // A `&str` buffer is immutable but still supports selection and copying.
+                let mut text = text;
+                ui.add(
+                    TextEdit::multiline(&mut text)
+                        .font(TextStyle::Monospace)
+                        .frame(false)
+                        .margin(Margin::ZERO)
+                        .desired_rows(1)
+                        .desired_width(f32::INFINITY),
+                );
+            });
+    });
+}
+
+fn text_format(font: &FontId, color: Color32) -> TextFormat {
+    TextFormat {
+        font_id: font.clone(),
+        color,
+        ..Default::default()
     }
 }
 
-fn translation_box(ui: &mut egui::Ui, frame: usize, protein: &str) {
-    ui.label(format!("Frame {frame}:"));
-    let mut display = protein.to_owned();
-    ui.add_sized(
-        [ui.available_width(), 105.0],
-        TextEdit::multiline(&mut display)
-            .font(TextStyle::Monospace)
-            .interactive(false),
-    );
+/// Append text, extending the previous section when the format is unchanged
+/// so long sequences produce few sections.
+fn append_run(job: &mut LayoutJob, text: &str, format: &TextFormat) {
+    match job.sections.last_mut() {
+        Some(last) if last.format == *format => {
+            job.text.push_str(text);
+            last.byte_range.end = job.text.len();
+        }
+        _ => job.append(text, 0.0, format.clone()),
+    }
+}
+
+/// Append `bytes` as runs split wherever `flags` changes.
+fn append_flagged(
+    job: &mut LayoutJob,
+    bytes: &[u8],
+    flags: &[bool],
+    plain: &TextFormat,
+    flagged: &TextFormat,
+) {
+    let mut start = 0;
+    while start < bytes.len() {
+        let flag = flags[start];
+        let end = flags[start..]
+            .iter()
+            .position(|&value| value != flag)
+            .map_or(bytes.len(), |offset| start + offset);
+        let text = std::str::from_utf8(&bytes[start..end]).unwrap_or("?");
+        append_run(job, text, if flag { flagged } else { plain });
+        start = end;
+    }
 }
 
 fn origin_layout(
     sequence: &str,
     matches: &[usize],
     query_len: usize,
-    text_color: Color32,
+    palette: &Palette,
+    font: FontId,
 ) -> LayoutJob {
-    let mut highlighted = vec![false; sequence.len()];
+    let bytes = sequence.as_bytes();
+    let mut highlighted = vec![false; bytes.len()];
     for &start in matches {
-        for position in start..(start + query_len).min(highlighted.len()) {
-            highlighted[position] = true;
-        }
+        highlighted[start..(start + query_len).min(bytes.len())].fill(true);
     }
 
-    let normal = TextFormat {
-        font_id: FontId::monospace(14.0),
-        color: text_color,
-        ..Default::default()
-    };
+    let number = text_format(&font, palette.text_weak);
+    let normal = text_format(&font, palette.text);
     let selected = TextFormat {
-        font_id: FontId::monospace(14.0),
-        color: Color32::BLACK,
-        background: Color32::YELLOW,
-        ..Default::default()
+        background: palette.highlight_bg,
+        ..text_format(&font, palette.highlight_fg)
     };
     let mut job = LayoutJob::default();
-    job.wrap.max_width = f32::INFINITY;
-    for line_start in (0..sequence.len()).step_by(60) {
-        job.append(&format!("{:>9} ", line_start + 1), 0.0, normal.clone());
-        let line_end = (line_start + 60).min(sequence.len());
-        for position in line_start..line_end {
-            if position > line_start && (position - line_start) % 10 == 0 {
-                job.append(" ", 0.0, normal.clone());
+    for (line_index, line) in bytes.chunks(60).enumerate() {
+        let line_start = line_index * 60;
+        append_run(&mut job, &format!("{:>9} ", line_start + 1), &number);
+        for (group_index, group) in line.chunks(10).enumerate() {
+            let start = line_start + group_index * 10;
+            if group_index > 0 {
+                let joined = highlighted[start - 1] && highlighted[start];
+                append_run(&mut job, " ", if joined { &selected } else { &normal });
             }
-            job.append(
-                &sequence[position..position + 1],
-                0.0,
-                if highlighted[position] {
-                    selected.clone()
-                } else {
-                    normal.clone()
-                },
+            append_flagged(
+                &mut job,
+                group,
+                &highlighted[start..start + group.len()],
+                &normal,
+                &selected,
             );
         }
-        job.append("\n", 0.0, normal.clone());
+        append_run(&mut job, "\n", &normal);
     }
     job
 }
 
-fn alignment_layout(result: &AlignmentResult, text_color: Color32) -> LayoutJob {
-    let normal = TextFormat {
-        font_id: FontId::monospace(14.0),
-        color: text_color,
-        ..Default::default()
-    };
-    let mismatch = TextFormat {
-        font_id: FontId::monospace(14.0),
-        color: Color32::RED,
-        ..Default::default()
-    };
+/// Aligned rows with variable columns colored and a Clustal-style
+/// conservation line (`*`) underneath.
+fn alignment_layout(result: &AlignmentResult, palette: &Palette, font: FontId) -> LayoutJob {
+    let label = text_format(&font, palette.text_weak);
+    let normal = text_format(&font, palette.text);
+    let mismatch = text_format(&font, palette.mismatch);
     let label_width = result.labels.iter().map(String::len).max().unwrap_or(4) + 2;
     let rows: Vec<&[u8]> = result.sequences.iter().map(String::as_bytes).collect();
+    let width = rows.iter().map(|row| row.len()).max().unwrap_or(0);
+    let variable: Vec<bool> = (0..width)
+        .map(|column| {
+            let first = rows.first().and_then(|row| row.get(column));
+            rows.iter().any(|row| row.get(column) != first)
+        })
+        .collect();
+
     let mut job = LayoutJob::default();
-    job.wrap.max_width = f32::INFINITY;
-    for (row_index, row) in rows.iter().enumerate() {
-        job.append(
-            &format!("{:<label_width$}", result.labels[row_index]),
-            0.0,
-            normal.clone(),
-        );
-        for (column, base) in row.iter().enumerate() {
-            let conserved = rows.iter().all(|candidate| candidate[column] == *base);
-            job.append(
-                std::str::from_utf8(&row[column..column + 1]).unwrap_or("?"),
-                0.0,
-                if conserved {
-                    normal.clone()
-                } else {
-                    mismatch.clone()
-                },
-            );
-        }
-        job.append("\n", 0.0, normal.clone());
+    for (row_label, row) in result.labels.iter().zip(&rows) {
+        append_run(&mut job, &format!("{row_label:<label_width$}"), &label);
+        append_flagged(&mut job, row, &variable[..row.len()], &normal, &mismatch);
+        append_run(&mut job, "\n", &normal);
     }
+    let conservation: String = variable
+        .iter()
+        .map(|&is_variable| if is_variable { ' ' } else { '*' })
+        .collect();
+    append_run(&mut job, &" ".repeat(label_width), &label);
+    append_run(&mut job, &conservation, &label);
     job
+}
+
+fn contains_ignore_ascii_case(haystack: &str, needle: &str) -> bool {
+    needle.is_empty()
+        || haystack
+            .as_bytes()
+            .windows(needle.len())
+            .any(|window| window.eq_ignore_ascii_case(needle.as_bytes()))
+}
+
+fn group_thousands(value: usize) -> String {
+    let digits = value.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (index, digit) in digits.chars().enumerate() {
+        if index > 0 && (digits.len() - index).is_multiple_of(3) {
+            grouped.push(',');
+        }
+        grouped.push(digit);
+    }
+    grouped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn groups_thousands() {
+        assert_eq!(group_thousands(7), "7");
+        assert_eq!(group_thousands(1_234), "1,234");
+        assert_eq!(group_thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
+    fn filters_case_insensitively() {
+        assert!(contains_ignore_ascii_case("EcoRI", "ecor"));
+        assert!(!contains_ignore_ascii_case("EcoRI", "bam"));
+    }
+
+    #[test]
+    fn origin_layout_merges_runs() {
+        let sequence = "A".repeat(120);
+        let job = origin_layout(
+            &sequence,
+            &[5],
+            3,
+            Palette::for_dark_mode(false),
+            FontId::monospace(13.0),
+        );
+        // Two lines of numbering plus bases, with one highlighted run.
+        assert!(job.sections.len() < 10, "{} sections", job.sections.len());
+        assert!(job.text.starts_with("        1 AAAAAAAAAA AAAAAAAAAA"));
+    }
 }

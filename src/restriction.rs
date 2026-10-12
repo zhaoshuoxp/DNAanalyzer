@@ -54,24 +54,31 @@ fn parse_cut(value: &str) -> Option<i32> {
 /// Scan every known enzyme in parallel. Results include only enzymes with at
 /// least one valid cleavage inside this linear sequence.
 pub fn analyze_restriction_sites(sequence: &str) -> Vec<RestrictionHit> {
+    let sequence = iupac_masks(sequence);
     let mut hits: Vec<_> = enzymes()
         .par_iter()
-        .filter_map(|enzyme| scan_enzyme(sequence, enzyme))
+        .filter_map(|enzyme| scan_enzyme_masks(&sequence, enzyme))
         .collect();
     hits.sort_unstable_by(|left, right| left.name.cmp(&right.name));
     hits
 }
 
+#[cfg(test)]
 fn scan_enzyme(sequence: &str, enzyme: &RestrictionEnzyme) -> Option<RestrictionHit> {
-    let site = enzyme.site.as_bytes();
+    scan_enzyme_masks(&iupac_masks(sequence), enzyme)
+}
+
+/// `sequence` holds one IUPAC mask per base, precomputed once per analysis.
+fn scan_enzyme_masks(sequence: &[u8], enzyme: &RestrictionEnzyme) -> Option<RestrictionHit> {
+    let site = iupac_masks(&enzyme.site);
     if site.is_empty() || site.len() > sequence.len() || enzyme.first_forward_cut.is_none() {
         return None;
     }
 
     let mut positions = BTreeSet::new();
     scan_orientation(
-        sequence.as_bytes(),
-        site,
+        sequence,
+        &site,
         &[enzyme.first_forward_cut, enzyme.second_forward_cut],
         false,
         &mut positions,
@@ -80,8 +87,8 @@ fn scan_enzyme(sequence: &str, enzyme: &RestrictionEnzyme) -> Option<Restriction
     let reverse_site = reverse_complement_site(&enzyme.site);
     if reverse_site != enzyme.site {
         scan_orientation(
-            sequence.as_bytes(),
-            reverse_site.as_bytes(),
+            sequence,
+            &iupac_masks(&reverse_site),
             &[enzyme.first_reverse_cut, enzyme.second_reverse_cut],
             true,
             &mut positions,
@@ -103,9 +110,11 @@ fn scan_orientation(
     positions: &mut BTreeSet<usize>,
 ) {
     for (start, window) in sequence.windows(site.len()).enumerate() {
-        if !window.iter().zip(site).all(|(&sequence_base, &site_base)| {
-            iupac_mask(sequence_base) & iupac_mask(site_base) != 0
-        }) {
+        if !window
+            .iter()
+            .zip(site)
+            .all(|(&sequence_mask, &site_mask)| sequence_mask & site_mask != 0)
+        {
             continue;
         }
         for cut in cuts.iter().flatten() {
@@ -142,6 +151,10 @@ fn reverse_complement_site(site: &str) -> String {
             _ => 'N',
         })
         .collect()
+}
+
+fn iupac_masks(sequence: &str) -> Vec<u8> {
+    sequence.bytes().map(iupac_mask).collect()
 }
 
 fn iupac_mask(base: u8) -> u8 {

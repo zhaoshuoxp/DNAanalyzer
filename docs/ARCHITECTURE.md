@@ -7,7 +7,8 @@ DNA Analyzer 2.0 separates the native UI from a testable analysis library.
 1. `src/lib.rs` owns parsing, complements, translation, search, and ORIGIN export. It has no GUI or operating-system dependencies.
 2. `src/restriction.rs` loads the compile-time enzyme table once, represents IUPAC symbols as four-bit masks, and distributes enzyme scans across the Rayon thread pool.
 3. `src/alignment.rs` tries every discovered MUSCLE executable, isolates each run in a temporary directory, checks process status, and validates the returned FASTA alignment. If no candidate can run, a native center-star progressive aligner performs Needleman–Wunsch pairwise alignment and merges the center gap profiles.
-4. `src/app.rs` renders the original single-page egui layout. Restriction scanning and MUSCLE run on workers connected through channels, so repaint and editing remain responsive. Search and Multiple Alignment launch the same signed executable in dedicated window modes; this gives each tool a true native window and avoids unreliable eframe child-viewport teardown on Intel macOS.
+4. `src/theme.rs` defines matching light and dark palettes and installs both egui styles; egui picks one from the system appearance.
+5. `src/app.rs` renders the original single-page egui layout. Restriction scanning and MUSCLE run on workers connected through channels, so repaint and editing remain responsive. Search and Multiple Alignment launch the same signed executable in dedicated window modes; this gives each tool a true native window and avoids unreliable eframe child-viewport teardown on Intel macOS.
 
 ## Portability
 

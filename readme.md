@@ -6,11 +6,17 @@ DNA Analyzer is a fast native desktop application for DNA and RNA analysis. It i
 
 ### Main analysis window
 
-![DNA Analyzer main window](docs/images/main-window.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/main-window-dark.png">
+  <img alt="DNA Analyzer main window" src="docs/images/main-window.png">
+</picture>
 
 ### Multiple sequence alignment
 
-![Multiple sequence alignment window](docs/images/multiple-alignment.png)
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/images/multiple-alignment-dark.png">
+  <img alt="Multiple sequence alignment window" src="docs/images/multiple-alignment.png">
+</picture>
 
 ## Features
 
@@ -27,10 +33,14 @@ DNA Analyzer is a fast native desktop application for DNA and RNA analysis. It i
 - FASTA, GenBank ORIGIN, and plain-sequence input
 - File drag and drop
 - Numbered ORIGIN-style export compatible with the original application
+- Light and dark appearance that follows the operating system
+- Native system fonts with CJK fallback for file names and paths
 
 ## User interface
 
 The main window preserves the layout of the original application. Search, translation, restriction analysis, BLAST, multiple alignment, and save controls remain in their original positions. Restriction results expand on the far right. Search and multiple alignment open as independent native windows rather than tabs.
+
+The interface follows the operating system's light or dark appearance and switches automatically when it changes. Set `DNA_ANALYZER_THEME=light` or `DNA_ANALYZER_THEME=dark` to force one appearance.
 
 ## Opening an unsigned macOS build
 

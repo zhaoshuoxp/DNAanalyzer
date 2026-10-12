@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
+mod theme;
 
 use app::{AppMode, DnaAnalyzerApp};
 use eframe::egui;
